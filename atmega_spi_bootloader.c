@@ -244,7 +244,7 @@ AVR_MCU(F_CPU, "atmega328p");
 
 
 /* function prototypes */
-void spi_tx(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4);
+void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4);
 void byte_response(uint8_t);
 void nothing_response(void);
 void flash_led(uint8_t);
@@ -277,7 +277,7 @@ uint8_t error_count = 0;
 
 void (*app_start)(void) = 0x0000;
 
-uint8_t spi_tx_buf[4];
+uint8_t spi_txn_buf[4];
 
 /* main program starts here */
 int main(void)
@@ -298,7 +298,14 @@ int main(void)
 #else
 	asm volatile("nop\n\t");
 #endif
-
+    // enable pin is high
+    DDRD |= _BV(4);
+    PORTD |= _BV(4);
+    // make sure shutdown pin is low
+    // eeprom is high
+    DDRB |= (_BV(6)|_BV(7));
+    PORTB &= ~_BV(6);
+    PORTB |= _BV(7);
 
     // setup SPI for slave mode
 
@@ -329,18 +336,18 @@ int main(void)
 	for (;;) {
 
         // get some bytes
-        spi_tx(0,0,0,0);
+        spi_txn(0,0,0,0);
 
 
         /* A bunch of if...else if... gives smaller code than switch...case ! */
 
         /* Hello is anyone home ? */ 
-        if(spi_tx_buf[0]=='0') {
+        if(spi_txn_buf[0]=='0') {
             nothing_response();
         }
 
         /* Leave programming mode  */
-        else if(spi_tx_buf[0]=='Q') {
+        else if(spi_txn_buf[0]=='Q') {
             nothing_response();
 #ifdef WATCHDOG_MODS
             // autoreset via watchdog (sneaky!)
@@ -353,30 +360,31 @@ int main(void)
         /* Set address, little endian. EEPROM in bytes, FLASH in words  */
         /* Perhaps extra address bytes may be added in future to support > 128kB FLASH.  */
         /* This might explain why little endian was used here, big endian used everywhere else.  */
-        else if(spi_tx_buf[0]=='U') {
-            address.byte[0] = spi_tx_buf[1];
-            address.byte[1] = spi_tx_buf[2];
+        else if(spi_txn_buf[0]=='U') {
+            address.byte[0] = spi_txn_buf[1];
+            address.byte[1] = spi_txn_buf[2];
             nothing_response();
         }
 
 
         /* Write memory, length is big endian and is in bytes  */
-        else if(spi_tx_buf[0]=='d') {
-            length.byte[1] = spi_tx_buf[1];
-            length.byte[0] = spi_tx_buf[2];
+        else if(spi_txn_buf[0]=='d') {
+            length.byte[1] = spi_txn_buf[1];
+            length.byte[0] = spi_txn_buf[2];
             flags.eeprom = 0;
-            if (spi_tx_buf[3] == 'E') flags.eeprom = 1;
-            spi_tx(0,0,0,0);
+            if (spi_txn_buf[3] == 'E') flags.eeprom = 1;
+            spi_txn(0,0,0,0);
             for (w=0,idx=0;w<length.word;w++) {
-                buff[w] = spi_tx_buf[idx++];	                        // Store data in buffer, can't keep up with serial data stream whilst programming pages
+                buff[w] = spi_txn_buf[idx++];	                        // Store data in buffer, can't keep up with serial data stream whilst programming pages
                 if (idx == 4) {
                     idx = 0;
-                    spi_tx(0,0,0,0);
+                    spi_txn(0,0,0,0);
                 }
             }
             for (;idx<4;idx++)
-                if (spi_tx_buf[idx] != 0)
+                if (spi_txn_buf[idx] != 0)
                     app_start();
+            nothing_response();
             if (flags.eeprom) {		                //Write to EEPROM one byte at a time
                 address.word <<= 1;
                 for(w=0;w<length.word;w++) {
@@ -510,15 +518,15 @@ int main(void)
 
 
         /* Read memory block mode, length is big endian.  */
-        else if(spi_tx_buf[0]=='t') {
-            length.byte[1] = spi_tx_buf[1];
-            length.byte[0] = spi_tx_buf[2];
+        else if(spi_txn_buf[0]=='t') {
+            length.byte[1] = spi_txn_buf[1];
+            length.byte[0] = spi_txn_buf[2];
 #if defined(__AVR_ATmega128__) || defined(__AVR_ATmega1280__)
             if (address.word>0x7FFF) flags.rampz = 1;		// No go with m256, FIXME
             else flags.rampz = 0;
 #endif
             address.word = address.word << 1;	        // address * 2 -> byte location
-            if (spi_tx_buf[3] == 'E') flags.eeprom = 1;
+            if (spi_txn_buf[3] == 'E') flags.eeprom = 1;
             else flags.eeprom = 0;
             uint8_t read_buf[4];
             for (w=0,idx=0;w < length.word;w++) {		        // Can handle odd and even lengths okay
@@ -537,27 +545,28 @@ int main(void)
                 }
                 if (idx == 4) {
                     idx = 0;
-                    spi_tx(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
+                    spi_txn(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
                 }
             }
             if (idx != 0) {
                 for(;idx<4;idx++)
                     read_buf[idx] = 0;
-                spi_tx(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
+                spi_txn(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
             }
+            nothing_response();
         }
 
 
         /* Get device signature bytes  */
-        else if(spi_tx_buf[0]=='u') {
-            spi_tx(SIG1,SIG2,SIG3,0x14);
+        else if(spi_txn_buf[0]=='u') {
+            spi_txn(SIG1,SIG2,SIG3,0x14);
         }
 
 	} /* end of forever loop */
 
 }
 
-void spi_tx(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
+void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
 {
     uint32_t count = 0;
     for (int i=0; i<4; i++) {
@@ -574,19 +583,19 @@ void spi_tx(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
             if (count > MAX_TIME_COUNT)
                 app_start();
         }
-        spi_tx_buf[i] = SPDR;
+        spi_txn_buf[i] = SPDR;
     }
 }
 
 void byte_response(uint8_t val)
 {
-    spi_tx(0x14,val,0x10,0);
+    spi_txn(0x14,val,0x10,0);
 }
 
 
 void nothing_response(void)
 {
-    spi_tx(0x14,0x10,0,0);
+    spi_txn(0x14,0x10,0,0);
 }
 
 void flash_led(uint8_t count)
