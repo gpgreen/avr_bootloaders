@@ -1,8 +1,6 @@
 /**********************************************************/
 /* SPI Bootloader for Atmel megaAVR Controllers           */
-/*                                                        */
-/* tested with ATmega328p                                 */
-/* should work with other mega's, see code for details    */
+/* Copyright (c) 2021, Greg Green                         */
 /*                                                        */
 /* atmega_spi_bootloader.c                                */
 /*                                                        */
@@ -110,27 +108,6 @@ AVR_MCU(F_CPU, "atmega328p");
 #define HW_VER	 0x02
 #define SW_MAJOR 0x01
 #define SW_MINOR 0x10
-
-
-/* Adjust to suit whatever pin your hardware uses to enter the bootloader */
-/* ATmega128 has two UARTS so two pins are used to enter bootloader and select UART */
-/* ATmega1280 has four UARTS, but for Arduino Mega, we will only use RXD0 to get code */
-/* BL0... means UART0, BL1... means UART1 */
-#ifdef __AVR_ATmega128__
-#define BL_DDR  DDRF
-#define BL_PORT PORTF
-#define BL_PIN  PINF
-#define BL0     PINF7
-#define BL1     PINF6
-#elif defined __AVR_ATmega1280__ 
-/* we just don't do anything for the MEGA and enter bootloader on reset anyway*/
-#else
-/* other ATmegas have only one UART, so only one pin is defined to enter bootloader */
-#define BL_DDR  DDRD
-#define BL_PORT PORTD
-#define BL_PIN  PIND
-#define BL      PIND6
-#endif
 
 
 /* onboard LED is used to indicate, that the bootloader was entered (3x flashing) */
@@ -581,6 +558,10 @@ void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
         while (!(SPSR & _BV(SPIF))) {
             count++;
             if (count > MAX_TIME_COUNT)
+                app_start();
+        }
+        if (SPSR & _BV(WCOL)) {
+            if (error_count++ == MAX_ERROR_COUNT)
                 app_start();
         }
         spi_txn_buf[i] = SPDR;
