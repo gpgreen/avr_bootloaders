@@ -11,6 +11,8 @@ include_directories(
 add_executable(
   tst_atmega_spi_bootloader
   tst_atmega_spi_bootloader.c
+  spi_virt.c
+  spi_virt.h
   )
 
 target_link_libraries(

@@ -25,10 +25,12 @@
 #include "sim_gdb.h"
 #include "parts/uart_pty.h"
 #include "sim_vcd_file.h"
+#include "spi_virt.h"
 
 uart_pty_t uart_pty;
 avr_t * avr = NULL;
 avr_vcd_t vcd_file;
+spi_virt_t mcu;
 
 struct avr_flash {
 	char avr_flash_path[1024];
@@ -76,6 +78,39 @@ void avr_special_deinit( avr_t* avr, void * data)
 	uart_pty_stop(&uart_pty);
 }
 
+uint8_t hello_buf[8] = {'0', 0, 0, 0, 0, 0, 0, 0};
+spi_txn_t hello1 = {
+    .length = 4,
+    .buf = hello_buf,
+    .raise_cs = 0,
+};
+spi_txn_t hello2 = {
+    .length = 4,
+    .buf = &hello_buf[4],
+    .raise_cs = 1,
+};
+
+static avr_cycle_count_t
+spi_txn_end(struct avr_t * avr, avr_cycle_count_t when, void * param)
+{
+    spi_virt_t * part = (spi_virt_t*)param;
+    spi_virt_start_txn(part, &hello2);
+}
+
+static avr_cycle_count_t
+spi_txn_start(struct avr_t * avr, avr_cycle_count_t when, void * param)
+{
+    spi_virt_t * part = (spi_virt_t*)param;
+    spi_virt_start_txn(part, &hello1);
+    avr_cycle_timer_register(part->avr, 2000, spi_txn_end, part);
+}
+
+static void
+spi_txn(spi_virt_t* mcu)
+{
+    avr_cycle_timer_register(mcu->avr, 2000000, spi_txn_start, mcu);
+}
+
 int main(int argc, char *argv[])
 {
 	struct avr_flash flash_data;
@@ -117,7 +152,7 @@ int main(int argc, char *argv[])
 	printf("%s bootloader 0x%05x: %d bytes\n", mmcu, boot_base, boot_size);
 
 	snprintf(flash_data.avr_flash_path, sizeof(flash_data.avr_flash_path),
-			"simduino_%s_flash.bin", mmcu);
+			"tst_atmega_spi_bootloader_%s_flash.bin", mmcu);
 	flash_data.avr_flash_fd = 0;
 	// register our own functions
 	avr->custom.init = avr_special_init;
@@ -143,6 +178,9 @@ int main(int argc, char *argv[])
 	uart_pty_init(avr, &uart_pty);
 	uart_pty_connect(&uart_pty, '0');
 
+    spi_virt_init(avr, &mcu);
+    spi_txn(&mcu);
+    
 	while (1) {
 		int state = avr_run(avr);
 		if ( state == cpu_Done || state == cpu_Crashed)

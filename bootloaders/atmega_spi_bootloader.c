@@ -72,8 +72,9 @@
 
 
 /* some includes */
-#include <inttypes.h>
+#include <stdint.h>
 #include <avr/io.h>
+#include <avr/boot.h>
 #include <avr/pgmspace.h>
 #include <avr/interrupt.h>
 #include <avr/wdt.h>
@@ -349,150 +350,55 @@ int main(void)
             length.byte[1] = spi_txn_buf[1];
             length.byte[0] = spi_txn_buf[2];
             flags.eeprom = 0;
-            if (spi_txn_buf[3] == 'E') flags.eeprom = 1;
+            if (spi_txn_buf[3] == 'E')
+                flags.eeprom = 1;
             spi_txn(0,0,0,0);
-            for (w=0,idx=0;w<length.word;w++) {
+            for (w=0,idx=0; w<length.word; w++) {
                 buff[w] = spi_txn_buf[idx++];	                        // Store data in buffer, can't keep up with serial data stream whilst programming pages
                 if (idx == 4) {
                     idx = 0;
                     spi_txn(0,0,0,0);
                 }
             }
-            for (;idx<4;idx++)
+            for (; idx<4; idx++)
                 if (spi_txn_buf[idx] != 0)
                     app_start();
             nothing_response();
             if (flags.eeprom) {		                //Write to EEPROM one byte at a time
                 address.word <<= 1;
-                for(w=0;w<length.word;w++) {
+                for(w=0; w<length.word; w++) {
                     eeprom_write_byte((void *)address.word,buff[w]);
                     address.word++;
                 }			
             }
             else {					        //Write to FLASH one page at a time
-                if (address.byte[1]>127) address_high = 0x01;	//Only possible with m128, m256 will need 3rd address byte. FIXME
-                else address_high = 0x00;
+                if (address.byte[1]>127)
+                    address_high = 0x01;	//Only possible with m128, m256 will need 3rd address byte. FIXME
+                else
+                    address_high = 0x00;
 #if defined(__AVR_ATmega128__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega1281__)
                 RAMPZ = address_high;
 #endif
                 address.word = address.word << 1;	        //address * 2 -> byte location
                 /* if ((length.byte[0] & 0x01) == 0x01) length.word++;	//Even up an odd number of bytes */
-                if ((length.byte[0] & 0x01)) length.word++;	//Even up an odd number of bytes
+                if ((length.byte[0] & 0x01))
+                    length.word++;	//Even up an odd number of bytes
                 cli();					//Disable interrupts, just to be sure
-#if defined(EEPE)
-                while(bit_is_set(EECR,EEPE));			//Wait for previous EEPROM writes to complete
-#else
-                while(bit_is_set(EECR,EEWE));			//Wait for previous EEPROM writes to complete
-#endif
-                asm volatile(
-                    "push   r28     \n\t"
-                    "push   r29     \n\t"
-                    "clr	r17		\n\t"	//page_word_count
-                    "lds	r30,address	\n\t"	//Address of FLASH location (in bytes)
-                    "lds	r31,address+1	\n\t"
-                    "ldi	r28,lo8(buff)	\n\t"	//Start of buffer array in RAM
-                    "ldi	r29,hi8(buff)	\n\t"
-                    "lds	r24,length	\n\t"	//Length of data to be written (in bytes)
-                    "lds	r25,length+1	\n\t"
-                    "length_loop:		\n\t"	//Main loop, repeat for number of words in block							 							 
-                    "cpi	r17,0x00	\n\t"	//If page_word_count=0 then erase page
-                    "brne	no_page_erase	\n\t"						 
-                    "wait_spm1:		\n\t"
-                    "lds	r16,%0		\n\t"	//Wait for previous spm to complete
-                    "andi	r16,1           \n\t"
-                    "cpi	r16,1           \n\t"
-                    "breq	wait_spm1       \n\t"
-                    "ldi	r16,0x03	\n\t"	//Erase page pointed to by Z
-                    "sts	%0,r16		\n\t"
-                    "spm			\n\t"							 
-#ifdef __AVR_ATmega163__
-                    ".word 0xFFFF		\n\t"
-                    "nop			\n\t"
-#endif
-                    "wait_spm2:		\n\t"
-                    "lds	r16,%0		\n\t"	//Wait for previous spm to complete
-                    "andi	r16,1           \n\t"
-                    "cpi	r16,1           \n\t"
-                    "breq	wait_spm2       \n\t"									 
 
-                    "ldi	r16,0x11	\n\t"	//Re-enable RWW section
-                    "sts	%0,r16		\n\t"						 			 
-                    "spm			\n\t"
-#ifdef __AVR_ATmega163__
-                    ".word 0xFFFF		\n\t"
-                    "nop			\n\t"
-#endif
-                    "no_page_erase:		\n\t"							 
-                    "ld	r0,Y+		\n\t"	//Write 2 bytes into page buffer
-                    "ld	r1,Y+		\n\t"							 
-								 
-                    "wait_spm3:		\n\t"
-                    "lds	r16,%0		\n\t"	//Wait for previous spm to complete
-                    "andi	r16,1           \n\t"
-                    "cpi	r16,1           \n\t"
-                    "breq	wait_spm3       \n\t"
-                    "ldi	r16,0x01	\n\t"	//Load r0,r1 into FLASH page buffer
-                    "sts	%0,r16		\n\t"
-                    "spm			\n\t"
-								 
-                    "inc	r17		\n\t"	//page_word_count++
-                    "cpi r17,%1	        \n\t"
-                    "brlo	same_page	\n\t"	//Still same page in FLASH
-                    "write_page:		\n\t"
-                    "clr	r17		\n\t"	//New page, write current one first
-                    "wait_spm4:		\n\t"
-                    "lds	r16,%0		\n\t"	//Wait for previous spm to complete
-                    "andi	r16,1           \n\t"
-                    "cpi	r16,1           \n\t"
-                    "breq	wait_spm4       \n\t"
-#ifdef __AVR_ATmega163__
-                    "andi	r30,0x80	\n\t"	// m163 requires Z6:Z1 to be zero during page write
-#endif							 							 
-                    "ldi	r16,0x05	\n\t"	//Write page pointed to by Z
-                    "sts	%0,r16		\n\t"
-                    "spm			\n\t"
-#ifdef __AVR_ATmega163__
-                    ".word 0xFFFF		\n\t"
-                    "nop			\n\t"
-                    "ori	r30,0x7E	\n\t"	// recover Z6:Z1 state after page write (had to be zero during write)
-#endif
-                    "wait_spm5:		\n\t"
-                    "lds	r16,%0		\n\t"	//Wait for previous spm to complete
-                    "andi	r16,1           \n\t"
-                    "cpi	r16,1           \n\t"
-                    "breq	wait_spm5       \n\t"									 
-                    "ldi	r16,0x11	\n\t"	//Re-enable RWW section
-                    "sts	%0,r16		\n\t"						 			 
-                    "spm			\n\t"					 		 
-#ifdef __AVR_ATmega163__
-                    ".word 0xFFFF		\n\t"
-                    "nop			\n\t"
-#endif
-                    "same_page:		\n\t"							 
-                    "adiw	r30,2		\n\t"	//Next word in FLASH
-                    "sbiw	r24,2		\n\t"	//length-2
-                    "breq	final_write	\n\t"	//Finished
-                    "rjmp	length_loop	\n\t"
-                    "final_write:		\n\t"
-                    "cpi	r17,0		\n\t"
-                    "breq	block_done	\n\t"
-                    "adiw	r24,2		\n\t"	//length+2, fool above check on length after short page write
-                    "rjmp	write_page	\n\t"
-                    "block_done:		\n\t"
-                    "clr	__zero_reg__	\n\t"	//restore zero register
-                    "pop    r29         \n\t"
-                    "pop    r28         \n\t"
-#if defined(__AVR_ATmega168__) || defined(__AVR_ATmega328P__) || defined(__AVR_ATmega328__) || defined(__AVR_ATmega128__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega1281__)
-                    : "=m" (SPMCSR) : "M" (PAGE_SIZE) : "r0","r16","r17","r24","r25","r30","r31"
-#else
-                    : "=m" (SPMCR) : "M" (PAGE_SIZE) : "r0","r16","r17","r24","r25","r30","r31"
-#endif
-                    );
-                /* Should really add a wait for RWW section to be enabled, don't actually need it since we never */
-                /* exit the bootloader without a power cycle anyhow */
+                boot_page_erase_safe(address.word);
+
+                uint8_t* addr = buff;
+                for (uint16_t i=0; i<length.word; i+=2) {
+                    uint16_t w = *addr++;
+                    w += (*addr++) << 8;
+                    boot_page_fill_safe(address.word + i, w);
+                }
+
+                boot_page_write_safe(address.word);
+
+                boot_rww_enable_safe();
             }
         }
-
 
         /* Read memory block mode, length is big endian.  */
         else if(spi_txn_buf[0]=='t') {
