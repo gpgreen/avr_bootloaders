@@ -107,8 +107,8 @@ AVR_MCU(F_CPU, "atmega328p");
 /* SW_MAJOR and MINOR needs to be updated from time to time to avoid warning message from AVR Studio */
 /* never allow AVR Studio to do an update !!!! */
 #define HW_VER	 0x02
-#define SW_MAJOR 0x01
-#define SW_MINOR 0x10
+#define SW_MAJOR 0x00
+#define SW_MINOR 0x01
 
 
 /* onboard LED is used to indicate, that the bootloader was entered (3x flashing) */
@@ -224,7 +224,6 @@ AVR_MCU(F_CPU, "atmega328p");
 /* function prototypes */
 void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4);
 void byte_response(uint8_t);
-void nothing_response(void);
 void flash_led(uint8_t);
 
 /* some variables */
@@ -321,12 +320,12 @@ int main(void)
 
         /* Hello is anyone home ? */ 
         if(spi_txn_buf[0]=='0') {
-            nothing_response();
+            byte_response('0');
         }
 
         /* Leave programming mode  */
         else if(spi_txn_buf[0]=='Q') {
-            nothing_response();
+            byte_response('Q');
 #ifdef WATCHDOG_MODS
             // autoreset via watchdog (sneaky!)
             WDTCSR = _BV(WDE);
@@ -341,7 +340,7 @@ int main(void)
         else if(spi_txn_buf[0]=='U') {
             address.byte[0] = spi_txn_buf[1];
             address.byte[1] = spi_txn_buf[2];
-            nothing_response();
+            byte_response('U');
         }
 
 
@@ -360,10 +359,11 @@ int main(void)
                     spi_txn(0,0,0,0);
                 }
             }
+            // verify last of bytes in transaction are 0's
             for (; idx<4; idx++)
                 if (spi_txn_buf[idx] != 0)
                     app_start();
-            nothing_response();
+            byte_response('d');
             if (flags.eeprom) {		                //Write to EEPROM one byte at a time
                 address.word <<= 1;
                 for(w=0; w<length.word; w++) {
@@ -405,12 +405,16 @@ int main(void)
             length.byte[1] = spi_txn_buf[1];
             length.byte[0] = spi_txn_buf[2];
 #if defined(__AVR_ATmega128__) || defined(__AVR_ATmega1280__)
-            if (address.word>0x7FFF) flags.rampz = 1;		// No go with m256, FIXME
-            else flags.rampz = 0;
+            if (address.word>0x7FFF)
+                flags.rampz = 1;		// No go with m256, FIXME
+            else
+                flags.rampz = 0;
 #endif
             address.word = address.word << 1;	        // address * 2 -> byte location
-            if (spi_txn_buf[3] == 'E') flags.eeprom = 1;
-            else flags.eeprom = 0;
+            if (spi_txn_buf[3] == 'E')
+                flags.eeprom = 1;
+            else
+                flags.eeprom = 0;
             uint8_t read_buf[4];
             for (w=0,idx=0;w < length.word;w++) {		        // Can handle odd and even lengths okay
                 if (flags.eeprom) {	                        // Byte access EEPROM read
@@ -419,30 +423,34 @@ int main(void)
                 }
                 else {
                 
-                    if (!flags.rampz) read_buf[idx++] = pgm_read_byte_near(address.word);
+                    if (!flags.rampz)
+                        read_buf[idx++] = pgm_read_byte_near(address.word);
 #if defined(__AVR_ATmega128__) || defined(__AVR_ATmega1280__)
-                    else read_buf[idx++] = pgm_read_byte_far(address.word + 0x10000);
+                    else
+                        read_buf[idx++] = pgm_read_byte_far(address.word + 0x10000);
                     // Hmmmm, yuck  FIXME when m256 arrvies
 #endif
                     address.word++;
                 }
+                // filled up buffer, send it..
                 if (idx == 4) {
                     idx = 0;
                     spi_txn(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
                 }
             }
+            // send remaining bytes, if any..
             if (idx != 0) {
                 for(;idx<4;idx++)
                     read_buf[idx] = 0;
                 spi_txn(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
             }
-            nothing_response();
+            byte_response('t');
         }
 
 
         /* Get device signature bytes  */
         else if(spi_txn_buf[0]=='u') {
-            spi_txn(SIG1,SIG2,SIG3,0x14);
+            spi_txn('u',SIG1,SIG2,SIG3);
         }
 
 	} /* end of forever loop */
@@ -479,11 +487,6 @@ void byte_response(uint8_t val)
     spi_txn(0x14,val,0x10,0);
 }
 
-
-void nothing_response(void)
-{
-    spi_txn(0x14,0x10,0,0);
-}
 
 void flash_led(uint8_t count)
 {
