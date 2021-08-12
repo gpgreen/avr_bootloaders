@@ -247,7 +247,6 @@ uint8_t address_high;
 
 uint8_t pagesz=0x80;
 
-uint8_t i;
 uint8_t bootuart = 0;
 
 uint8_t error_count = 0;
@@ -351,6 +350,7 @@ int main(void)
             flags.eeprom = 0;
             if (spi_txn_buf[3] == 'E')
                 flags.eeprom = 1;
+
             spi_txn(0,0,0,0);
             for (w=0,idx=0; w<length.word; w++) {
                 buff[w] = spi_txn_buf[idx++];	                        // Store data in buffer, can't keep up with serial data stream whilst programming pages
@@ -372,6 +372,11 @@ int main(void)
                 }			
             }
             else {					        //Write to FLASH one page at a time
+
+                // if write length is greater than a page, bail
+                if (length.word > (PAGE_SIZE<<1))
+                    app_start();
+
                 if (address.byte[1]>127)
                     address_high = 0x01;	//Only possible with m128, m256 will need 3rd address byte. FIXME
                 else
@@ -432,13 +437,13 @@ int main(void)
 #endif
                     address.word++;
                 }
-                // filled up buffer, send it..
+                // filled up spi buffer, send it..
                 if (idx == 4) {
                     idx = 0;
                     spi_txn(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
                 }
             }
-            // send remaining bytes, if any..
+            // send remaining bytes via spi, if any..
             if (idx != 0) {
                 for(;idx<4;idx++)
                     read_buf[idx] = 0;

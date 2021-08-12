@@ -27,7 +27,6 @@
 #include "sim_vcd_file.h"
 #include "spi_virt.h"
 
-uart_pty_t uart_pty;
 avr_t * avr = NULL;
 avr_vcd_t vcd_file;
 spi_virt_t mcu;
@@ -75,46 +74,16 @@ void avr_special_deinit( avr_t* avr, void * data)
 		perror(flash_data->avr_flash_path);
 	}
 	close(flash_data->avr_flash_fd);
-	uart_pty_stop(&uart_pty);
-}
 
-uint8_t hello_buf[8] = {'0', 0, 0, 0, 0, 0, 0, 0};
-spi_txn_t hello1 = {
-    .length = 4,
-    .buf = hello_buf,
-    .raise_cs = 0,
-};
-spi_txn_t hello2 = {
-    .length = 4,
-    .buf = &hello_buf[4],
-    .raise_cs = 1,
-};
-
-static avr_cycle_count_t
-spi_txn_end(struct avr_t * avr, avr_cycle_count_t when, void * param)
-{
-    spi_virt_t * part = (spi_virt_t*)param;
-    spi_virt_start_txn(part, &hello2);
-}
-
-static avr_cycle_count_t
-spi_txn_start(struct avr_t * avr, avr_cycle_count_t when, void * param)
-{
-    spi_virt_t * part = (spi_virt_t*)param;
-    spi_virt_start_txn(part, &hello1);
-    avr_cycle_timer_register(part->avr, 2000, spi_txn_end, part);
-}
-
-static void
-spi_txn(spi_virt_t* mcu)
-{
-    avr_cycle_timer_register(mcu->avr, 2000000, spi_txn_start, mcu);
+    // clean up spi input
+    spi_txn_input_cleanup();
 }
 
 int main(int argc, char *argv[])
 {
 	struct avr_flash flash_data;
 	char boot_path[1024] = "../build-power-monitor-bootloader-avr/power-monitor-bootloader-atmega328p.hex";
+    char spi_input_file[2048] = "";
 	uint32_t boot_base, boot_size;
 	char * mmcu = "atmega328p";
 	uint32_t freq = 8000000;
@@ -128,6 +97,8 @@ int main(int argc, char *argv[])
 			debug++;
 		else if (!strcmp(argv[i], "-v"))
 			verbose++;
+        else if (!strcmp(argv[i] + strlen(argv[i]) - 4, ".txt"))
+            strncpy(spi_input_file, argv[i], sizeof(spi_input_file));
 		else {
 			fprintf(stderr, "%s: invalid argument %s\n", argv[0], argv[i]);
 			exit(1);
@@ -175,11 +146,8 @@ int main(int argc, char *argv[])
 		avr_gdb_init(avr);
 	}
 
-	uart_pty_init(avr, &uart_pty);
-	uart_pty_connect(&uart_pty, '0');
-
     spi_virt_init(avr, &mcu);
-    spi_txn(&mcu);
+    spi_txn_input_init(spi_input_file, &mcu);
     
 	while (1) {
 		int state = avr_run(avr);

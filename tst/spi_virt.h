@@ -12,9 +12,12 @@
 #include <stdint.h>
 #include "sim_avr.h"
 
+/*-----------------------------------------------------------------------*/
 
 #define CS_DELAY_CYCLES 4
 #define SCK_DELAY_CYCLES 6
+
+/*-----------------------------------------------------------------------*/
 
 enum {
     SPI_VIRT_CS,
@@ -26,10 +29,14 @@ enum {
 	SPI_VIRT_COUNT
 };
 
+/*-----------------------------------------------------------------------*/
+
 typedef enum {
     Idle,
     ByteTxn,
 } spi_virt_state_t;
+
+/*-----------------------------------------------------------------------*/
 
 typedef struct spi_txn
 {
@@ -38,6 +45,8 @@ typedef struct spi_txn
     int raise_cs;
 } spi_txn_t;
     
+/*-----------------------------------------------------------------------*/
+
 typedef struct spi_virt 
 {
     struct avr_t * avr;
@@ -49,7 +58,37 @@ typedef struct spi_virt
     int txn_idx;
 } spi_virt_t;
 
+/*-----------------------------------------------------------------------*/
+
+typedef struct spi_test_txn 
+{
+    avr_cycle_count_t start_cycle;
+    spi_txn_t transaction;
+    struct spi_test_txn *next;
+} spi_test_txn_t;
+
+/*-----------------------------------------------------------------------*/
+
+typedef struct spi_txn_input 
+{
+    char input_path[2048];
+    struct spi_test_txn * first;
+} spi_txn_input_t ;
+
+/*-----------------------------------------------------------------------*/
+
+extern spi_txn_input_t test_input;
+
+/*-----------------------------------------------------------------------*/
+
 extern void spi_virt_init(struct avr_t * avr, spi_virt_t * part);
+
 extern void spi_virt_start_txn(spi_virt_t * part, spi_txn_t* txn);
+
+extern void spi_txn_input_init(char* path, spi_virt_t * part);
+
+extern void spi_txn_input_cleanup(void);
+
+/*-----------------------------------------------------------------------*/
 
 #endif // SPI_VIRT_H_

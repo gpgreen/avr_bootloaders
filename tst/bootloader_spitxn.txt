@@ -1,0 +1,11 @@
+# SPI Transaction input file
+# each row is one transaction of 4 bytes
+# first column is which avr cycle to start in
+# next four columns are byte in hex
+# final column is 0 if CS not raised, 1 if CS raised after transaction complete
+2000000 30 00 00 00 0    # hello, anyone there?
+2002000 00 00 00 00 1
+2005000 75 00 00 00 0    # device signature bytes
+2007000 00 00 00 00 1
+2012000 55 00 00 00 0    # set address 0x0000
+2017000 00 00 00 00 1
