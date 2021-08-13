@@ -160,25 +160,73 @@ spi_txn_input_t test_input;
 // pointer to the current spi transaction
 spi_test_txn_t * current_spi_txn;
 
+// pointer to previous spi transaction
+spi_test_txn_t * prev_spi_txn;
+
 /*-----------------------------------------------------------------------*/
+
+static int
+spi_txn_has_finish_response(spi_test_txn_t * txn)
+{
+    int i = 0;
+    for (; i<4; i++) {
+        if (txn->transaction.buf[i] != 0xaa)
+            break;
+    }
+    if (i != 4)
+        return 0;
+    return 1;
+}
+
+static void
+spi_txn_fix_cycle_target(struct avr_t * avr, spi_virt_t * part)
+{
+    avr_cycle_count_t t = avr->cycle - current_spi_txn->start_cycle;
+    spi_test_txn_t * txn = current_spi_txn;
+    while (txn->next != NULL) {
+        printf("SPIVIRT: start was [%lu], now [%lu]\n", txn->next->start_cycle, txn->next->start_cycle + t);
+        txn->next->start_cycle += t;
+        txn = txn->next;
+    }
+}
 
 static avr_cycle_count_t
 spi_txn_start(struct avr_t * avr, avr_cycle_count_t when, void * param)
 {
     spi_virt_t * part = (spi_virt_t*)param;
-    spi_virt_start_txn(part, &current_spi_txn->transaction);
-    current_spi_txn = current_spi_txn->next;
+    printf("SPIVIRT: [%lu] schedule was [%lu]\n", avr->cycle, current_spi_txn->start_cycle);
+    if (current_spi_txn->repeat && prev_spi_txn == current_spi_txn
+        && spi_txn_has_finish_response(current_spi_txn)) {
+        // cancel the repeat, and move to next
+        spi_txn_fix_cycle_target(avr, part);
+        current_spi_txn = current_spi_txn->next;
+    } else {
+        spi_virt_start_txn(part, &current_spi_txn->transaction);
+        if (!current_spi_txn->repeat) {
+            // advance the transaction
+            prev_spi_txn = current_spi_txn;
+            current_spi_txn = current_spi_txn->next;
+        } else {
+            // repeating txn
+            prev_spi_txn = current_spi_txn;
+        }
+    }
     if (current_spi_txn != NULL) {
-        if (avr->cycle > current_spi_txn->start_cycle) {
-            printf("SPIVIRT: next spi txn scheduled cycle of %lu is backwards in time\n",
-                   current_spi_txn->start_cycle);
+        avr_cycle_count_t t;
+        if (!current_spi_txn->repeat && avr->cycle > current_spi_txn->start_cycle) {
+            printf("SPIVIRT: next spi txn scheduled [%lu] is backwards in time:[%lu]\n",
+                   current_spi_txn->start_cycle, avr->cycle);
             return 0;
         }
-        avr_cycle_count_t t = current_spi_txn->start_cycle - avr->cycle;
-        if (t == 0)
-            spi_txn_start(part->avr, avr->cycle, part);
-        else
-            avr_cycle_timer_register(part->avr, t, spi_txn_start, part);
+        else if (current_spi_txn->repeat && avr->cycle >= current_spi_txn->start_cycle) {
+            printf("SPIVIRT: Repeating transaction\n");
+            t = TXN_REPEAT_CYCLES;
+        } else {
+            t = current_spi_txn->start_cycle - avr->cycle;
+        }
+        printf("SPIVIRT: next spi txn at [%lu], current [%lu]\n",
+               t + current_spi_txn->start_cycle, avr->cycle);
+        avr_cycle_timer_register(part->avr, t, spi_txn_start, part);
     }
     return 0;
 }
@@ -190,9 +238,10 @@ static void
 initiate_spi_txn(spi_virt_t* mcu)
 {
     current_spi_txn = test_input.first;
+    prev_spi_txn = NULL;
     if (current_spi_txn == NULL)
         return;
-    printf("SPIVIRT: first spi transactions scheduled at cycle %lu\n",
+    printf("SPIVIRT: first spi transaction scheduled at [%lu]\n",
            current_spi_txn->start_cycle);
     avr_cycle_timer_register(mcu->avr, current_spi_txn->start_cycle, spi_txn_start, mcu);
 }
@@ -212,6 +261,7 @@ initiate_spi_txn(spi_virt_t* mcu)
  * 2007000 00 00 00 00 1
  * 2012000 55 00 00 00 0    # set address 0x0000
  * 2017000 00 00 00 00 1
+ * 2023000 00 00 00 00 1 REPEAT
  */
 
 // read an input file and get all the spi transactions
@@ -265,10 +315,21 @@ void spi_txn_input_init(char* path, spi_virt_t* mcu)
         cnt = sscanf(start + 1, "%d", &cs);
         if (cnt != 1)
             goto error_exit;
+        start += 2;
+        // see if the repeat flag is there
+        int repeat = 0;
+        while (*start == ' ') start++;
+        if (strlen(start) > 1) {
+            char endline[256];
+            cnt = sscanf(start, "%255s", endline);
+            if (cnt == 1 && strncmp(endline, "REPEAT", 6) == 0)
+                repeat = 1;
+        }
         // make the transaction
         spi_test_txn_t * txn = malloc(sizeof(struct spi_test_txn));
         txn->start_cycle = cycle;
         txn->transaction.length = 4;
+        txn->repeat = repeat;
         uint8_t* buf = malloc(4);
         memcpy(buf, hexnum, 4);
         txn->transaction.buf = buf;

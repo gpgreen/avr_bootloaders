@@ -16,6 +16,7 @@
 
 #define CS_DELAY_CYCLES 4
 #define SCK_DELAY_CYCLES 6
+#define TXN_REPEAT_CYCLES 5000
 
 /*-----------------------------------------------------------------------*/
 
@@ -64,6 +65,7 @@ typedef struct spi_test_txn
 {
     avr_cycle_count_t start_cycle;
     spi_txn_t transaction;
+    int repeat;
     struct spi_test_txn *next;
 } spi_test_txn_t;
 

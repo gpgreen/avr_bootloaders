@@ -84,6 +84,9 @@
 /* for use with simavr */
 #include <avr/avr_mcu_section.h>
 AVR_MCU(F_CPU, "atmega328p");
+AVR_MCU_LONG(AVR_MMCU_TAG_LFUSE, (0xE2));
+AVR_MCU_LONG(AVR_MMCU_TAG_HFUSE, (0xD8));
+AVR_MCU_LONG(AVR_MMCU_TAG_EFUSE, (0xFD));
 
 /* Use the F_CPU defined in Makefile */
 
@@ -224,6 +227,7 @@ AVR_MCU(F_CPU, "atmega328p");
 /* function prototypes */
 void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4);
 void byte_response(uint8_t);
+void finish_response(void);
 void flash_led(uint8_t);
 
 /* some variables */
@@ -390,19 +394,23 @@ int main(void)
                     length.word++;	//Even up an odd number of bytes
                 cli();					//Disable interrupts, just to be sure
 
-                boot_page_erase_safe(address.word);
-
+                eeprom_busy_wait();
+                boot_page_erase(address.word);
+                boot_spm_busy_wait();
+                
                 uint8_t* addr = buff;
                 for (uint16_t i=0; i<length.word; i+=2) {
                     uint16_t w = *addr++;
                     w += (*addr++) << 8;
-                    boot_page_fill_safe(address.word + i, w);
+                    boot_page_fill(address.word + i, w);
                 }
 
-                boot_page_write_safe(address.word);
+                boot_page_write(address.word);
+                boot_spm_busy_wait();
 
-                boot_rww_enable_safe();
+                boot_rww_enable();
             }
+            finish_response();
         }
 
         /* Read memory block mode, length is big endian.  */
@@ -486,6 +494,12 @@ void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
         spi_txn_buf[i] = SPDR;
     }
 }
+
+void finish_response(void)
+{
+    spi_txn(0xAA,0xAA,0xAA,0xAA);
+}
+
 
 void byte_response(uint8_t val)
 {
