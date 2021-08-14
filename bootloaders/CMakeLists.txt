@@ -32,8 +32,9 @@ set(AVR_MCU atmega328p)
 set(AVRDUDE_MCU m328p)
 set(AVR_USE_E_FUSE on)
 set(AVR_E_FUSE 0xfd)
-set(AVR_H_FUSE 0xd8)
+set(AVR_H_FUSE 0xd9)
 set(AVR_L_FUSE 0xe2)
+set(BOOTSTART 0x3800)
 
 ### END TOOLCHAIN SETUP AREA #############################################
 
@@ -55,6 +56,7 @@ message(STATUS "Current use E fuse is set to: ${AVR_USE_E_FUSE}")
 message(STATUS "Current E_FUSE is set to: ${AVR_E_FUSE}")
 message(STATUS "Current H_FUSE is set to: ${AVR_H_FUSE}")
 message(STATUS "Current L_FUSE is set to: ${AVR_L_FUSE}")
+message(STATUS "Current boot start address is set to: ${BOOTSTART}")
 
 ##################################################################################
 # set build type, if not already set at cmake command line
@@ -144,7 +146,7 @@ if(POWER_MONITOR_BOOTLOADER)
   add_definitions("-DPOWER_MONITOR_FW=1")
   add_definitions("-DNUM_LED_FLASHES=1")
   add_definitions("-DMAX_TIME_COUNT=F_CPU>>4")
-  add_link_options("-Wl,--section-start=.text=0x3800")
+  add_link_options("-Wl,--section-start=.text=${BOOTSTART}")
 endif()
 
 

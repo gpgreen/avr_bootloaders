@@ -146,13 +146,22 @@ int main(int argc, char *argv[])
 		avr_gdb_init(avr);
 	}
 
-    spi_virt_init(avr, &mcu);
+    spi_virt_wiring_t wiring = {
+        .chip_select = { .port = 'B', .pin = 2 },
+        .button = { .port = 'D', .pin = 2 },
+    };
+    
+    spi_virt_init(avr, &mcu, &wiring);
     spi_txn_input_init(spi_input_file, &mcu);
+    spi_virt_save_to_file(&mcu, "bootloader_tst_output.txt");
     
 	while (1) {
 		int state = avr_run(avr);
 		if ( state == cpu_Done || state == cpu_Crashed)
 			break;
 	}
+    if (mcu.output_file != NULL)
+        fclose(mcu.output_file);
+    mcu.output_file = NULL;
 
 }

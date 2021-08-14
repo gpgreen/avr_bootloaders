@@ -15,8 +15,28 @@ static const char * _spi_virt_irq_names[SPI_VIRT_COUNT] = {
 	[SPI_VIRT_SDO] = ">spivirt.sdo",
     [SPI_VIRT_BYTE_TXN_START] = "=spivirt.u8txnstart",
     [SPI_VIRT_BYTE_TXN_END] = "=spivirt.u8txnend",
-    [SPI_VIRT_TXN_END] = "=spivirt.txnend"
+    [SPI_VIRT_TXN_END] = "=spivirt.txnend",
+    [SPI_VIRT_BUTTON] = ">spivirt.button",
+    [SPI_VIRT_NEW_TXN_SIGNAL] = ">spivirt.newtxn",
 };
+
+/*-----------------------------------------------------------------------*/
+
+// hook when button value received
+static void
+spi_virt_button_hook(struct avr_irq_t * irq, uint32_t value, void * param)
+{
+    spi_virt_t * part = (spi_virt_t*)param;
+    part->button = value & 0xFF;
+    printf("SPIVIRT: BUTTON=0x%02x\n", part->button);
+    // make sure we are well into startup phase before we trigger
+    // a new spi transaction, as we get a low signal on button
+    // right after bootup
+    if (part->button == 0 && part->avr->cycle > 2000) {
+        printf("SPIVIRT: BUTTON DOWN, new spi txn can start\n");
+        avr_raise_irq(part->irq + SPI_VIRT_NEW_TXN_SIGNAL, (uint32_t)part);
+    }
+}
 
 /*-----------------------------------------------------------------------*/
 
@@ -107,8 +127,29 @@ spi_virt_txn_end_hook(struct avr_irq_t * irq,
 
 /*-----------------------------------------------------------------------*/
 
+static void
+spi_virt_txn_advance_hook(struct avr_irq_t * irq, uint32_t value, void * param)
+{
+    spi_virt_t * part = (spi_virt_t*)param;
+    part->current_txn->cycle = part->avr->cycle;
+    if (part->output_file != NULL) {
+        fprintf(part->output_file, "%lu ", part->avr->cycle);
+        for (int i=0; i<part->current_txn->transaction.length; i++)
+            fprintf(part->output_file, "%02x ", part->current_txn->transaction.buf[i]);
+        fprintf(part->output_file, "\n");
+        fflush(part->output_file);
+    }
+    part->current_txn = part->current_txn->next;
+    if (part->current_txn != NULL) {
+        spi_virt_start_txn(part, &part->current_txn->transaction);
+    }
+}
+
+/*-----------------------------------------------------------------------*/
+
 // initialize the part
-void spi_virt_init(struct avr_t * avr, spi_virt_t * part)
+void spi_virt_init(struct avr_t * avr, spi_virt_t * part,
+    spi_virt_wiring_t * wiring)
 {
     memset(part, 0, sizeof(spi_virt_t));
     part->avr = avr;
@@ -120,10 +161,13 @@ void spi_virt_init(struct avr_t * avr, spi_virt_t * part)
     avr_irq_register_notify(part->irq + SPI_VIRT_BYTE_TXN_START, spi_virt_byte_txn_start_hook, part);
     avr_irq_register_notify(part->irq + SPI_VIRT_BYTE_TXN_END, spi_virt_byte_txn_end_hook, part);
     avr_irq_register_notify(part->irq + SPI_VIRT_TXN_END, spi_virt_txn_end_hook, part);
+    avr_irq_register_notify(part->irq + SPI_VIRT_BUTTON, spi_virt_button_hook, part);
+    avr_irq_register_notify(part->irq + SPI_VIRT_NEW_TXN_SIGNAL, spi_virt_txn_advance_hook, part);
     
     avr_connect_irq(
         part->irq + SPI_VIRT_CS,
-        avr_io_getirq(part->avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 2));
+        avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ(wiring->chip_select.port),
+                      wiring->chip_select.pin));
 
     avr_connect_irq(
         avr_io_getirq(avr, AVR_IOCTL_SPI_GETIRQ(0), SPI_IRQ_OUTPUT),
@@ -133,9 +177,17 @@ void spi_virt_init(struct avr_t * avr, spi_virt_t * part)
         part->irq + SPI_VIRT_SDI,
         avr_io_getirq(avr, AVR_IOCTL_SPI_GETIRQ(0), SPI_IRQ_INPUT));
     
-    // make sure the CS, SCK pins are correct
+    avr_connect_irq(
+        avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ(wiring->button.port),
+                      wiring->button.pin),
+        part->irq + SPI_VIRT_BUTTON);
+
+    // make sure the CS pin is high
     avr_raise_irq(part->irq + SPI_VIRT_CS, 1);
-    avr_raise_irq(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 2), 0);
+    // button should be high
+    avr_raise_irq(
+        avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ(wiring->button.port),
+                      wiring->button.pin), 1);
 }
 
 /*-----------------------------------------------------------------------*/
@@ -157,93 +209,29 @@ void spi_virt_start_txn(spi_virt_t * part, spi_txn_t * txn)
 // global variable to hold spi transactions
 spi_txn_input_t test_input;
 
-// pointer to the current spi transaction
-spi_test_txn_t * current_spi_txn;
-
-// pointer to previous spi transaction
-spi_test_txn_t * prev_spi_txn;
-
 /*-----------------------------------------------------------------------*/
-
-static int
-spi_txn_has_finish_response(spi_test_txn_t * txn)
-{
-    int i = 0;
-    for (; i<4; i++) {
-        if (txn->transaction.buf[i] != 0xaa)
-            break;
-    }
-    if (i != 4)
-        return 0;
-    return 1;
-}
-
-static void
-spi_txn_fix_cycle_target(struct avr_t * avr, spi_virt_t * part)
-{
-    avr_cycle_count_t t = avr->cycle - current_spi_txn->start_cycle;
-    spi_test_txn_t * txn = current_spi_txn;
-    while (txn->next != NULL) {
-        printf("SPIVIRT: start was [%lu], now [%lu]\n", txn->next->start_cycle, txn->next->start_cycle + t);
-        txn->next->start_cycle += t;
-        txn = txn->next;
-    }
-}
 
 static avr_cycle_count_t
 spi_txn_start(struct avr_t * avr, avr_cycle_count_t when, void * param)
 {
     spi_virt_t * part = (spi_virt_t*)param;
-    printf("SPIVIRT: [%lu] schedule was [%lu]\n", avr->cycle, current_spi_txn->start_cycle);
-    if (current_spi_txn->repeat && prev_spi_txn == current_spi_txn
-        && spi_txn_has_finish_response(current_spi_txn)) {
-        // cancel the repeat, and move to next
-        spi_txn_fix_cycle_target(avr, part);
-        current_spi_txn = current_spi_txn->next;
-    } else {
-        spi_virt_start_txn(part, &current_spi_txn->transaction);
-        if (!current_spi_txn->repeat) {
-            // advance the transaction
-            prev_spi_txn = current_spi_txn;
-            current_spi_txn = current_spi_txn->next;
-        } else {
-            // repeating txn
-            prev_spi_txn = current_spi_txn;
-        }
-    }
-    if (current_spi_txn != NULL) {
-        avr_cycle_count_t t;
-        if (!current_spi_txn->repeat && avr->cycle > current_spi_txn->start_cycle) {
-            printf("SPIVIRT: next spi txn scheduled [%lu] is backwards in time:[%lu]\n",
-                   current_spi_txn->start_cycle, avr->cycle);
-            return 0;
-        }
-        else if (current_spi_txn->repeat && avr->cycle >= current_spi_txn->start_cycle) {
-            printf("SPIVIRT: Repeating transaction\n");
-            t = TXN_REPEAT_CYCLES;
-        } else {
-            t = current_spi_txn->start_cycle - avr->cycle;
-        }
-        printf("SPIVIRT: next spi txn at [%lu], current [%lu]\n",
-               t + current_spi_txn->start_cycle, avr->cycle);
-        avr_cycle_timer_register(part->avr, t, spi_txn_start, part);
+    if (part->current_txn != NULL) {
+        spi_virt_start_txn(part, &part->current_txn->transaction);
     }
     return 0;
 }
-
 
 /*-----------------------------------------------------------------------*/
 
 static void
 initiate_spi_txn(spi_virt_t* mcu)
 {
-    current_spi_txn = test_input.first;
-    prev_spi_txn = NULL;
-    if (current_spi_txn == NULL)
+    mcu->current_txn = test_input.first;
+    if (mcu->current_txn == NULL)
         return;
     printf("SPIVIRT: first spi transaction scheduled at [%lu]\n",
-           current_spi_txn->start_cycle);
-    avr_cycle_timer_register(mcu->avr, current_spi_txn->start_cycle, spi_txn_start, mcu);
+           test_input.start_cycle);
+    avr_cycle_timer_register(mcu->avr, test_input.start_cycle, spi_txn_start, mcu);
 }
 
 /*-----------------------------------------------------------------------*/
@@ -251,22 +239,22 @@ initiate_spi_txn(spi_virt_t* mcu)
 /* example of input file
  *
  * # SPI Transaction input file
+ * # first row is cycle to start this file of transactions
  * # each row is one transaction of 4 bytes
- * # first column is which avr cycle to start in
  * # next four columns are spi byte in hex
  * # final column is 0 if CS not raised, 1 if CS raised after transaction complete
- * 2000000 30 00 00 00 0    # hello, anyone there?
- * 2002000 00 00 00 00 1
- * 2005000 75 00 00 00 0    # device signature bytes
- * 2007000 00 00 00 00 1
- * 2012000 55 00 00 00 0    # set address 0x0000
- * 2017000 00 00 00 00 1
- * 2023000 00 00 00 00 1 REPEAT
+ * 30 00 00 00 0    # hello, anyone there?
+ * 00 00 00 00 1
+ * 75 00 00 00 0    # device signature bytes
+ * 00 00 00 00 1
+ * 55 00 00 00 0    # set address 0x0000
+ * 00 00 00 00 1
  */
 
 // read an input file and get all the spi transactions
 void spi_txn_input_init(char* path, spi_virt_t* mcu)
 {
+    int cnt;
     int txn_count = 0;
     char input_line[80];
     test_input.first = NULL;
@@ -294,14 +282,15 @@ void spi_txn_input_init(char* path, spi_virt_t* mcu)
         // skip comment lines
         if (input_line[0] == '#' || input_line[0] == '\n')
             continue;
-        // get the cycle
-        uint64_t cycle;
         char* start = input_line;
-        int cnt = sscanf(start, "%lu", &cycle);
-        if (cnt != 1) {
-            goto error_exit;
+        if (test_input.start_cycle == 0) {
+            // get the cycle
+            cnt = sscanf(start, "%lu", &test_input.start_cycle);
+            if (cnt != 1) {
+                goto error_exit;
+            }
+            continue;
         }
-        start = strchr(start, ' ');
         // get the 4 hex bytes
         uint8_t hexnum[4];
         for (int i=0; i<4; i++) {
@@ -316,20 +305,10 @@ void spi_txn_input_init(char* path, spi_virt_t* mcu)
         if (cnt != 1)
             goto error_exit;
         start += 2;
-        // see if the repeat flag is there
-        int repeat = 0;
-        while (*start == ' ') start++;
-        if (strlen(start) > 1) {
-            char endline[256];
-            cnt = sscanf(start, "%255s", endline);
-            if (cnt == 1 && strncmp(endline, "REPEAT", 6) == 0)
-                repeat = 1;
-        }
         // make the transaction
         spi_test_txn_t * txn = malloc(sizeof(struct spi_test_txn));
-        txn->start_cycle = cycle;
+        txn->cycle = 0;
         txn->transaction.length = 4;
-        txn->repeat = repeat;
         uint8_t* buf = malloc(4);
         memcpy(buf, hexnum, 4);
         txn->transaction.buf = buf;
@@ -362,4 +341,19 @@ void spi_txn_input_cleanup(void)
         free(delete_me);
     }
 }
+
+/*-----------------------------------------------------------------------*/
+
+void spi_virt_save_to_file(spi_virt_t * part, char * path)
+{
+    if (strlen(path) == 0)
+        return;
+    part->output_file = fopen(path, "w");
+    if (part->output_file == NULL) {
+        printf("SPIVIRT: unable to open file '%s' for writing\n", path);
+        return;
+    }
+    
+}
+
 

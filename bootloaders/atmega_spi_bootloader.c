@@ -85,7 +85,7 @@
 #include <avr/avr_mcu_section.h>
 AVR_MCU(F_CPU, "atmega328p");
 AVR_MCU_LONG(AVR_MMCU_TAG_LFUSE, (0xE2));
-AVR_MCU_LONG(AVR_MMCU_TAG_HFUSE, (0xD8));
+AVR_MCU_LONG(AVR_MMCU_TAG_HFUSE, (0xD9));
 AVR_MCU_LONG(AVR_MMCU_TAG_EFUSE, (0xFD));
 
 /* Use the F_CPU defined in Makefile */
@@ -227,7 +227,6 @@ AVR_MCU_LONG(AVR_MMCU_TAG_EFUSE, (0xFD));
 /* function prototypes */
 void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4);
 void byte_response(uint8_t);
-void finish_response(void);
 void flash_led(uint8_t);
 
 /* some variables */
@@ -255,9 +254,14 @@ uint8_t bootuart = 0;
 
 uint8_t error_count = 0;
 
-void (*app_start)(void) = 0x0000;
-
 uint8_t spi_txn_buf[4];
+
+void app_start(void)
+{
+    // autoreset via watchdog (sneaky!)
+    WDTCSR = _BV(WDE);
+    while (1); // 16 ms
+}
 
 /* main program starts here */
 int main(void)
@@ -265,29 +269,20 @@ int main(void)
 	uint8_t idx;
 	uint16_t w;
     
-#ifdef WATCHDOG_MODS
-	ch = MCUSR;
-	MCUSR = 0;
-
-	WDTCSR |= _BV(WDCE) | _BV(WDE);
-	WDTCSR = 0;
-
-	// Check if the WDT was used to reset, in which case we dont bootload and skip straight to the code. woot.
-	if (! (ch &  _BV(EXTRF))) // if its a not an external reset...
-		app_start();  // skip bootloader
-#else
 	asm volatile("nop\n\t");
-#endif
+
     // enable pin is high
-    DDRD |= _BV(4);
+    // button pin stays low
+    DDRD |= (_BV(2)|_BV(4));
     PORTD |= _BV(4);
+    
     // make sure shutdown pin is low
     // eeprom is high
     DDRB |= (_BV(6)|_BV(7));
     PORTB &= ~_BV(6);
     PORTB |= _BV(7);
 
-    // setup SPI for slave mode
+    // setup SPI for peripheral mode
 
     // CS, SCK, MOSI to input
     DDRB &= ~(_BV(2)|_BV(3)|_BV(5));
@@ -328,12 +323,7 @@ int main(void)
 
         /* Leave programming mode  */
         else if(spi_txn_buf[0]=='Q') {
-            byte_response('Q');
-#ifdef WATCHDOG_MODS
-            // autoreset via watchdog (sneaky!)
-            WDTCSR = _BV(WDE);
-            while (1); // 16 ms
-#endif
+            app_start();
         }
 
 
@@ -343,7 +333,6 @@ int main(void)
         else if(spi_txn_buf[0]=='U') {
             address.byte[0] = spi_txn_buf[1];
             address.byte[1] = spi_txn_buf[2];
-            byte_response('U');
         }
 
 
@@ -354,20 +343,19 @@ int main(void)
             flags.eeprom = 0;
             if (spi_txn_buf[3] == 'E')
                 flags.eeprom = 1;
-
             spi_txn(0,0,0,0);
-            for (w=0,idx=0; w<length.word; w++) {
-                buff[w] = spi_txn_buf[idx++];	                        // Store data in buffer, can't keep up with serial data stream whilst programming pages
+            // Store data in buffer, can't keep up with data stream whilst programming pages
+            for (w=0,idx=0; w<length.word; w++,idx++) {
                 if (idx == 4) {
                     idx = 0;
                     spi_txn(0,0,0,0);
                 }
+                buff[w] = spi_txn_buf[idx];
             }
             // verify last of bytes in transaction are 0's
             for (; idx<4; idx++)
                 if (spi_txn_buf[idx] != 0)
                     app_start();
-            byte_response('d');
             if (flags.eeprom) {		                //Write to EEPROM one byte at a time
                 address.word <<= 1;
                 for(w=0; w<length.word; w++) {
@@ -394,23 +382,16 @@ int main(void)
                     length.word++;	//Even up an odd number of bytes
                 cli();					//Disable interrupts, just to be sure
 
-                eeprom_busy_wait();
-                boot_page_erase(address.word);
-                boot_spm_busy_wait();
-                
+                boot_page_erase_safe(address.word);
                 uint8_t* addr = buff;
                 for (uint16_t i=0; i<length.word; i+=2) {
                     uint16_t w = *addr++;
                     w += (*addr++) << 8;
-                    boot_page_fill(address.word + i, w);
+                    boot_page_fill_safe(address.word + i, w);
                 }
-
-                boot_page_write(address.word);
-                boot_spm_busy_wait();
-
-                boot_rww_enable();
+                boot_page_write_safe(address.word);
+                boot_rww_enable_safe();
             }
-            finish_response();
         }
 
         /* Read memory block mode, length is big endian.  */
@@ -429,35 +410,33 @@ int main(void)
             else
                 flags.eeprom = 0;
             uint8_t read_buf[4];
-            for (w=0,idx=0;w < length.word;w++) {		        // Can handle odd and even lengths okay
-                if (flags.eeprom) {	                        // Byte access EEPROM read
-                    read_buf[idx++] = eeprom_read_byte((void *)address.word);
-                    address.word++;
-                }
-                else {
-                
-                    if (!flags.rampz)
-                        read_buf[idx++] = pgm_read_byte_near(address.word);
-#if defined(__AVR_ATmega128__) || defined(__AVR_ATmega1280__)
-                    else
-                        read_buf[idx++] = pgm_read_byte_far(address.word + 0x10000);
-                    // Hmmmm, yuck  FIXME when m256 arrvies
-#endif
-                    address.word++;
-                }
+            for (w=0,idx=0;w < length.word;w++,idx++) {		        // Can handle odd and even lengths okay
                 // filled up spi buffer, send it..
                 if (idx == 4) {
                     idx = 0;
                     spi_txn(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
                 }
+                if (flags.eeprom) {	                        // Byte access EEPROM read
+                    read_buf[idx] = eeprom_read_byte((void *)address.word);
+                }
+                else {
+                
+                    if (!flags.rampz)
+                        read_buf[idx] = pgm_read_byte_near(address.word);
+#if defined(__AVR_ATmega128__) || defined(__AVR_ATmega1280__)
+                    else
+                        read_buf[idx] = pgm_read_byte_far(address.word + 0x10000);
+                    // Hmmmm, yuck  FIXME when m256 arrvies
+#endif
+                }
+                address.word++;
             }
             // send remaining bytes via spi, if any..
-            if (idx != 0) {
+            if (idx < 4) {
                 for(;idx<4;idx++)
                     read_buf[idx] = 0;
                 spi_txn(read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
             }
-            byte_response('t');
         }
 
 
@@ -472,6 +451,8 @@ int main(void)
 
 void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
 {
+    // button pin low to signal ready for more
+    PORTD &= ~_BV(2);
     uint32_t count = 0;
     for (int i=0; i<4; i++) {
         if (i == 0)
@@ -486,6 +467,8 @@ void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
             count++;
             if (count > MAX_TIME_COUNT)
                 app_start();
+            // take button pin back high
+            PORTD |= _BV(2);
         }
         if (SPSR & _BV(WCOL)) {
             if (error_count++ == MAX_ERROR_COUNT)
@@ -494,12 +477,6 @@ void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
         spi_txn_buf[i] = SPDR;
     }
 }
-
-void finish_response(void)
-{
-    spi_txn(0xAA,0xAA,0xAA,0xAA);
-}
-
 
 void byte_response(uint8_t val)
 {
