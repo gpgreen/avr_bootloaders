@@ -15,6 +15,8 @@ option(PYPILOT_CONTROLLER_BOOTLOADER "build for pypilot-controller board" OFF)
 
 option(POWER_MONITOR_BOOTLOADER "build for power monitor hat" OFF)
 
+option(NANO_PROTO_BOOTLOADER "build for nano breadboard prototype" OFF)
+
 ### TOOLCHAIN SETUP AREA #################################################
 # Set any variables used in the toolchain prior project() call. In that
 # case they are already set and used.
@@ -25,16 +27,30 @@ option(POWER_MONITOR_BOOTLOADER "build for power monitor hat" OFF)
 ##################################################################################
 set(AVR_UPLOADTOOL avrdude)
 set(AVR_PROGRAMMER usbtiny)
-set(AVR_UPLOADTOOL_PORT /dev/ttyACM0)
+#set(AVR_UPLOADTOOL_PORT /dev/ttyACM0)
 set(AVR_UPLOADTOOL_OPTIONS "-C/home/ggreen/apps/arduino-1.8.15/hardware/tools/avr/etc/avrdude.conf")
 # AVR and fuses needs to be set
 set(AVR_MCU atmega328p)
 set(AVRDUDE_MCU m328p)
 set(AVR_USE_E_FUSE on)
 set(AVR_E_FUSE 0xfd)
-set(AVR_H_FUSE 0xd9)
+set(AVR_H_FUSE 0xd8)
 set(AVR_L_FUSE 0xe2)
 set(BOOTSTART 0x3800)
+
+if(POWER_MONITOR_BOOTLOADER)
+  set(AVR_E_FUSE 0xfd)
+  set(AVR_H_FUSE 0xd8)
+  set(AVR_L_FUSE 0xe2)
+  set(MCU_SPEED "8000000UL")
+endif()
+
+if(NANO_PROTO_BOOTLOADER)
+  set(AVR_E_FUSE 0xff)
+  set(AVR_H_FUSE 0xd8)
+  set(AVR_L_FUSE 0xc7)
+  set(MCU_SPEED "16000000UL")
+endif()
 
 ### END TOOLCHAIN SETUP AREA #############################################
 
@@ -51,6 +67,7 @@ message(STATUS "Current programmer is: ${AVR_PROGRAMMER}")
 message(STATUS "Current upload port is: ${AVR_UPLOADTOOL_PORT}")
 message(STATUS "Current uploadtool options are: ${AVR_UPLOADTOOL_OPTIONS}")
 message(STATUS "Current MCU is set to: ${AVR_MCU}")
+message(STATUS "Current MCU_SPEED is set to: ${MCU_SPEED}")
 message(STATUS "Current Programmer MCU is set to: ${AVRDUDE_MCU}")
 message(STATUS "Current use E fuse is set to: ${AVR_USE_E_FUSE}")
 message(STATUS "Current E_FUSE is set to: ${AVR_E_FUSE}")
@@ -64,11 +81,6 @@ message(STATUS "Current boot start address is set to: ${BOOTSTART}")
 if(NOT CMAKE_BUILD_TYPE)
    set(CMAKE_BUILD_TYPE Release)
 endif(NOT CMAKE_BUILD_TYPE)
-
-##################################################################################
-# needs to be defined for AVR toolchain
-##################################################################################
-set(MCU_SPEED "8000000UL")
 
 ##################################################################################
 # some cmake cross-compile necessities
@@ -135,7 +147,7 @@ add_definitions("-std=gnu99")
 add_definitions("-DBAUD_RATE=57600")
 
 ##################################################################################
-# options for option builds
+# option builds
 ##################################################################################
 
 if(PYPILOT_CONTROLLER_BOOTLOADER)
@@ -149,6 +161,12 @@ if(POWER_MONITOR_BOOTLOADER)
   add_link_options("-Wl,--section-start=.text=${BOOTSTART}")
 endif()
 
+if(NANO_PROTO_BOOTLOADER)
+  add_definitions("-DNANO_PROTO_FW=1")
+  add_definitions("-DNUM_LED_FLASHES=1")
+  add_definitions("-DMAX_TIME_COUNT=F_CPU>>5")
+  add_link_options("-Wl,--section-start=.text=${BOOTSTART}")
+endif()
 
 ##########################################################################
 # include search paths
@@ -187,6 +205,19 @@ if(POWER_MONITOR_BOOTLOADER)
       LINK_FLAGS "-mmcu=${AVR_MCU} -Wl,--undefined=_mmcu,--section-start=.mmcu=0x910000 -Wl,-Map,power-monitor-bootloader-atmega328p.map"
     )
 endif()
+
+if(NANO_PROTO_BOOTLOADER)
+  add_avr_executable(
+    nano-bootloader
+    atmega_spi_bootloader.c
+    )
+  set_target_properties(
+    nano-bootloader-atmega328p.elf
+    PROPERTIES
+      LINK_FLAGS "-mmcu=${AVR_MCU} -Wl,--undefined=_mmcu,--section-start=.mmcu=0x910000 -Wl,-Map,nano-bootloader-atmega328p.map"
+    )
+endif()
+
 
 ##################################################################################
 # link library to executable

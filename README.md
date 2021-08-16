@@ -78,3 +78,18 @@ bootloader
 1 <- ['u', SIG1, SIG2, SIG3]
 ```
 
+## Power Monitor Bootloader
+
+This bootloader is for the Power Monitor Hat. It is based on an
+atmega328p tied via spi peripheral to a Raspberry Pi. The spi
+transactions are signalled via the BUTTON pin when the power monitor
+is ready to receive more data. The trigger to enter the bootloader is
+via the MCU_RUNNING pin. If that pin is high, the bootloader will enter
+spi peripheral mode, and new firmware can be loaded. If the pin is
+low when the bootloader is entered (the default as there is a
+pull-down), then the application code is started.
+
+After the flash has been loaded, send the 'Leave Programming Code' spi
+transaction. Then set the MCU_RUNNING pin low to reboot into the
+application code. There is a delay of 100ms between capturing the
+code and rebooting the mcu to allow the pin state change.

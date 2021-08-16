@@ -25,6 +25,7 @@ enum {
     SPI_VIRT_SDI,
 	SPI_VIRT_SDO,
     SPI_VIRT_BUTTON,
+    SPI_VIRT_MCU_RUNNING,
     SPI_VIRT_BYTE_TXN_START,
     SPI_VIRT_BYTE_TXN_END,
     SPI_VIRT_TXN_END,
@@ -98,6 +99,7 @@ typedef struct spi_virt_wiring_t
 {
     // required pins
     spi_virt_pin_t chip_select;
+    spi_virt_pin_t mcu_running;
     spi_virt_pin_t button;
 } spi_virt_wiring_t;
 

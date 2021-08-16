@@ -148,6 +148,7 @@ int main(int argc, char *argv[])
 
     spi_virt_wiring_t wiring = {
         .chip_select = { .port = 'B', .pin = 2 },
+        .mcu_running = { .port = 'B', .pin = 1 },
         .button = { .port = 'D', .pin = 2 },
     };
     

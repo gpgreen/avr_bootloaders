@@ -13,12 +13,23 @@ static const char * _spi_virt_irq_names[SPI_VIRT_COUNT] = {
 	[SPI_VIRT_CS] = "<spivirt.cs",
 	[SPI_VIRT_SDI] = "<spivirt.sdi",
 	[SPI_VIRT_SDO] = ">spivirt.sdo",
+    [SPI_VIRT_BUTTON] = ">spivirt.button",
+    [SPI_VIRT_MCU_RUNNING] = ">spivirt.mcu_running",
     [SPI_VIRT_BYTE_TXN_START] = "=spivirt.u8txnstart",
     [SPI_VIRT_BYTE_TXN_END] = "=spivirt.u8txnend",
     [SPI_VIRT_TXN_END] = "=spivirt.txnend",
-    [SPI_VIRT_BUTTON] = ">spivirt.button",
     [SPI_VIRT_NEW_TXN_SIGNAL] = ">spivirt.newtxn",
 };
+
+/*-----------------------------------------------------------------------*/
+
+// hook when button value received
+static void
+spi_virt_mcu_running_hook(struct avr_irq_t * irq, uint32_t value, void * param)
+{
+    spi_virt_t * part = (spi_virt_t*)param;
+    printf("SPIVIRT: MCU_RUNNING=0x%02x\n", value & 0xFF);
+}
 
 /*-----------------------------------------------------------------------*/
 
@@ -142,6 +153,10 @@ spi_virt_txn_advance_hook(struct avr_irq_t * irq, uint32_t value, void * param)
     part->current_txn = part->current_txn->next;
     if (part->current_txn != NULL) {
         spi_virt_start_txn(part, &part->current_txn->transaction);
+    } else {
+        // set MCU_RUNNING low for reboot into app code
+        printf("SPIVIRT: releasing MCU_RUNNING for app start\n");
+        avr_raise_irq(part->irq + SPI_VIRT_MCU_RUNNING, 0);
     }
 }
 
@@ -163,6 +178,7 @@ void spi_virt_init(struct avr_t * avr, spi_virt_t * part,
     avr_irq_register_notify(part->irq + SPI_VIRT_TXN_END, spi_virt_txn_end_hook, part);
     avr_irq_register_notify(part->irq + SPI_VIRT_BUTTON, spi_virt_button_hook, part);
     avr_irq_register_notify(part->irq + SPI_VIRT_NEW_TXN_SIGNAL, spi_virt_txn_advance_hook, part);
+    avr_irq_register_notify(part->irq + SPI_VIRT_MCU_RUNNING, spi_virt_mcu_running_hook, part);
     
     avr_connect_irq(
         part->irq + SPI_VIRT_CS,
@@ -182,12 +198,19 @@ void spi_virt_init(struct avr_t * avr, spi_virt_t * part,
                       wiring->button.pin),
         part->irq + SPI_VIRT_BUTTON);
 
+    avr_connect_irq(
+        part->irq + SPI_VIRT_MCU_RUNNING,
+        avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ(wiring->mcu_running.port),
+                      wiring->mcu_running.pin));
+
     // make sure the CS pin is high
     avr_raise_irq(part->irq + SPI_VIRT_CS, 1);
     // button should be high
     avr_raise_irq(
         avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ(wiring->button.port),
                       wiring->button.pin), 1);
+    // mcu_running should be high to execute bootloader code
+    avr_raise_irq(part->irq + SPI_VIRT_MCU_RUNNING, 1);
 }
 
 /*-----------------------------------------------------------------------*/

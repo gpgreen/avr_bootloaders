@@ -85,7 +85,7 @@
 #include <avr/avr_mcu_section.h>
 AVR_MCU(F_CPU, "atmega328p");
 AVR_MCU_LONG(AVR_MMCU_TAG_LFUSE, (0xE2));
-AVR_MCU_LONG(AVR_MMCU_TAG_HFUSE, (0xD9));
+AVR_MCU_LONG(AVR_MMCU_TAG_HFUSE, (0xD8));
 AVR_MCU_LONG(AVR_MMCU_TAG_EFUSE, (0xFD));
 
 /* Use the F_CPU defined in Makefile */
@@ -129,12 +129,45 @@ AVR_MCU_LONG(AVR_MMCU_TAG_EFUSE, (0xFD));
 #define LED_PIN  PINB
 #define LED      PINB0
 #else
-/* Onboard LED is connected to pin PB5 in Arduino NG, Diecimila, and Duomilanuove */ 
-/* other boards like e.g. Crumb8, Crumb168 are using PB2 */
+/* Onboard LED is connected to pin PB5 in Arduino NG, Diecimila, Nano, and Duomilanuove */ 
+/* other boards like e.g. Crumb8, Crumb168 are using PB2 (D13) */
 #define LED_DDR  DDRB
 #define LED_PORT PORTB
 #define LED_PIN  PINB
 #define LED      PINB5
+#endif
+
+#if defined(POWER_MONITOR_FW) || defined(NANO_PROTO_FW)
+
+// the boot pin (D9) [MCU_RUNNING]
+#define BOOT_DDR DDRB
+#define BOOT_PORT PORTB
+#define BOOT_PIN PINB
+#define BOOT PINB1
+
+// set MCU_RUNNING (APP) to external pull down
+AVR_MCU_EXTERNAL_PORT_PULL('B', (1<<1), 0)
+
+// the ready for new spi txn pin (D2) [BUTTON]
+#define BUTTON_DDR DDRD
+#define BUTTON_PORT PORTD
+#define BUTTON_PIN PIND
+#define BUTTON PIND2
+
+AVR_MCU_EXTERNAL_PORT_PULL('D', (1<<2), 1)
+
+#endif
+
+#if defined(POWER_MONITOR_FW)
+    
+// set MCU_SHUTDOWN to external pullup
+AVR_MCU_EXTERNAL_PORT_PULL('B', (1<<6), 1)
+
+#elif defined(NANO_PROTO_FW)
+    
+// set MCU_SHUTDOWN to external pullup
+AVR_MCU_EXTERNAL_PORT_PULL('D', (1<<3), 1)
+
 #endif
 
 
@@ -269,18 +302,29 @@ int main(void)
 	uint8_t idx;
 	uint16_t w;
     
-	asm volatile("nop\n\t");
-
-    // enable pin is high
     // button pin stays low
-    DDRD |= (_BV(2)|_BV(4));
+    BUTTON_DDR |= _BV(BUTTON);
+    BUTTON_PORT &= ~_BV(BUTTON);
+
+    // if MCU_RUNNING pin is high, that means remain in bootloader mode
+    // so set to input, no pullup, as it has external pull down
+    BOOT_DDR &= ~_BV(BOOT);
+
+    // if the application pin is low, jump to app
+    if (!(BOOT_PIN & _BV(BOOT)))
+        app_start();
+    
+#if defined(POWER_MONITOR_BOOTLOADER)
+    // enable pin (4) is high
+    DDRD |= _BV(4);
     PORTD |= _BV(4);
     
-    // make sure shutdown pin is low
-    // eeprom is high
+    // make sure mcu shutdown pin (6) is low
+    // eeprom pin (7) is high
     DDRB |= (_BV(6)|_BV(7));
     PORTB &= ~_BV(6);
     PORTB |= _BV(7);
+#endif
 
     // setup SPI for peripheral mode
 
@@ -452,7 +496,7 @@ int main(void)
 void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
 {
     // button pin low to signal ready for more
-    PORTD &= ~_BV(2);
+    BUTTON_PORT &= ~_BV(BUTTON);
     uint32_t count = 0;
     for (int i=0; i<4; i++) {
         if (i == 0)
@@ -468,7 +512,7 @@ void spi_txn(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4)
             if (count > MAX_TIME_COUNT)
                 app_start();
             // take button pin back high
-            PORTD |= _BV(2);
+            BUTTON_PORT |= _BV(BUTTON);
         }
         if (SPSR & _BV(WCOL)) {
             if (error_count++ == MAX_ERROR_COUNT)
